@@ -1,23 +1,16 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <math.h>   // ✅ FIX for sqrt()
 
-// ================= WIFI =================
-const char* ssid = "YOUR_WIFI_NAME";
-const char* password = "YOUR_WIFI_PASSWORD";
+#define SDA_PIN 21
+#define SCL_PIN 22
 
-// 🔴 IMPORTANT: Replace with your PC IP
-const char* serverURL = "http://192.168.1.5:3000/data";
-
-// ================= LCD =================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// ================= SENSOR =================
 int sensorPin = 34;
 
-float current;
-float power;
+float current = 0;
+float power = 0;
 float smoothPower = 0;
 float energy = 0;
 
@@ -26,26 +19,12 @@ float rate = 8.0;
 
 unsigned long lastTime = 0;
 
-// ================= SETUP =================
 void setup() {
   Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
 
-  Wire.begin(21, 22);
-  lcd.init();
+  lcd.begin(16, 2);   // ✅ safer than lcd.init()
   lcd.backlight();
-
-  // WiFi connect
-  WiFi.begin(ssid, password);
-  lcd.print("Connecting WiFi");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  lcd.clear();
-  lcd.print("WiFi Connected");
-  delay(1000);
 
   // Offset calibration
   long sum = 0;
@@ -56,20 +35,19 @@ void setup() {
   offset = sum / 500.0;
 
   lcd.clear();
-  lcd.print("Meter Ready");
-  delay(1000);
+  lcd.setCursor(0, 0);
+  lcd.print("Energy Meter");
+  delay(2000);
 }
 
-// ================= LOOP =================
 void loop() {
 
   long sum = 0;
 
-  // RMS sampling
   for (int i = 0; i < 200; i++) {
     int value = analogRead(sensorPin);
     float diff = value - offset;
-    sum += diff * diff;
+    sum += (long)(diff * diff);   // ✅ avoid warning
     delay(1);
   }
 
@@ -80,85 +58,74 @@ void loop() {
 
   // Noise filtering
   if (current < 0.02) current = 0;
-  if (current > 5) current = 0;
+  if (current > 1.0) current = 0;
 
   power = 230.0 * current;
 
-  // Smoothing
+  // Smoothing filter
   smoothPower = (0.7 * smoothPower) + (0.3 * power);
-
-  // 🔥 No-load detection
-  if (smoothPower < 10) {
-    smoothPower = 0;
-    current = 0;
-  }
 
   // Energy calculation
   if (millis() - lastTime >= 1000) {
     lastTime = millis();
-    energy += (smoothPower / 1000.0) * (1.0 / 3600.0);
+    energy += (smoothPower / 1000.0) / 3600.0;
   }
 
-  // 🔥 Real-time prediction
+  // Prediction
   float predictedCost = 0;
-  if (smoothPower > 10) {
+  if (smoothPower > 7) {
     float monthlyUnits = (smoothPower / 1000.0) * 24 * 30;
     predictedCost = monthlyUnits * rate;
   }
 
-  // ================= LCD =================
+  // ================= LCD DISPLAY =================
 
+  // Screen 1
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("P:");
   lcd.print(smoothPower, 1);
-  lcd.print("W");
+  lcd.print("W ");
 
-  lcd.setCursor(0, 1);
   lcd.print("I:");
   lcd.print(current, 2);
   lcd.print("A");
 
-  delay(1500);
+  lcd.setCursor(0, 1);
+  lcd.print("Live Load");
 
+  delay(2000);
+
+  // Screen 2
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Energy:");
   lcd.print(energy, 3);
+  lcd.print("kWh");
 
   lcd.setCursor(0, 1);
-  lcd.print("Pred:Rs");
+  lcd.print("Usage");
+
+  delay(2000);
+
+  // Screen 3
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Predicted Bill");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Rs:");
   lcd.print(predictedCost, 0);
 
-  delay(1500);
+  delay(2000);
 
-  // ================= SEND DATA =================
-
-  if (WiFi.status() == WL_CONNECTED) {
-
-    HTTPClient http;
-
-    http.begin(serverURL);
-    http.addHeader("Content-Type", "application/json");
-
-    String json = "{";
-    json += "\"current\":" + String(current) + ",";
-    json += "\"power\":" + String(smoothPower) + ",";
-    json += "\"energy\":" + String(energy) + ",";
-    json += "\"prediction\":" + String(predictedCost);
-    json += "}";
-
-    http.POST(json);
-    http.end();
-  }
-
-  // Serial debug
+  // Serial Debug
   Serial.print("Current: ");
   Serial.print(current);
   Serial.print(" A | Power: ");
   Serial.print(smoothPower);
   Serial.print(" W | Energy: ");
-  Serial.print(energy);
-  Serial.print(" kWh | Predicted: ");
+  Serial.print(energy, 6);
+  Serial.print(" kWh | Predicted Cost: ");
   Serial.println(predictedCost);
 }
